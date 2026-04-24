@@ -161,6 +161,8 @@ class CompositionFeatureBuilder:
             return np.zeros(self.n_magpie, dtype=np.float32)
 
     def _batch_featurize(self, name: str, featurizer, comps: Sequence) -> np.ndarray:
+        t0 = time.time()
+        print(f"[features] {name} start ({len(comps)} samples, workers={self.workers})", flush=True)
         try:
             if hasattr(featurizer, "set_n_jobs"):
                 featurizer.set_n_jobs(self.workers)
@@ -177,6 +179,7 @@ class CompositionFeatureBuilder:
             if arr.shape[0] != len(comps):
                 raise ValueError(f"{name} returned {arr.shape[0]} rows for {len(comps)} comps")
             self.extra_sizes[name] = int(arr.shape[1])
+            print(f"[features] {name} done in {time.time() - t0:.1f}s dim={arr.shape[1]}", flush=True)
             return arr
         except Exception as exc:
             print(f"[features] {name} batch path unavailable; using serial fallback. Reason: {exc}", flush=True)
@@ -191,6 +194,7 @@ class CompositionFeatureBuilder:
                 rows.append(vals)
             arr = np.vstack(rows).astype(np.float32)
             self.extra_sizes[name] = int(arr.shape[1])
+            print(f"[features] {name} serial done in {time.time() - t0:.1f}s dim={arr.shape[1]}", flush=True)
             return arr
 
     def _extras(self, comp) -> np.ndarray:
@@ -222,7 +226,9 @@ class CompositionFeatureBuilder:
                 self.pooler.pool(comp),
             ]).astype(np.float32))
         parts.append(np.vstack(rows).astype(np.float32))
-        return np.concatenate(parts, axis=1).astype(np.float32)
+        out = np.concatenate(parts, axis=1).astype(np.float32)
+        print(f"[features] composition matrix ready shape={out.shape}", flush=True)
+        return out
 
 
 def _homo_lumo_features(comp) -> np.ndarray:
