@@ -245,43 +245,6 @@ class CompositionFeatureBuilder:
         except Exception:
             return np.zeros(self.n_magpie, dtype=np.float32)
 
-    def _batch_featurize(self, name: str, featurizer, comps: Sequence) -> np.ndarray:
-        t0 = time.time()
-        print(f"[features] {name} start ({len(comps)} samples, workers={self.workers})", flush=True)
-        try:
-            if hasattr(featurizer, "set_n_jobs"):
-                featurizer.set_n_jobs(self.workers)
-            if hasattr(featurizer, "n_jobs"):
-                featurizer.n_jobs = self.workers
-            try:
-                rows = featurizer.featurize_many(comps, ignore_errors=True, pbar=True, n_jobs=self.workers)
-            except TypeError:
-                rows = featurizer.featurize_many(comps, ignore_errors=True, pbar=True)
-            arr = np.asarray(rows, dtype=np.float32)
-            if arr.ndim == 1:
-                arr = arr.reshape(len(comps), -1)
-            arr = _nan_to_num(arr)
-            if arr.shape[0] != len(comps):
-                raise ValueError(f"{name} returned {arr.shape[0]} rows for {len(comps)} comps")
-            self.extra_sizes[name] = int(arr.shape[1])
-            print(f"[features] {name} done in {time.time() - t0:.1f}s dim={arr.shape[1]}", flush=True)
-            return arr
-        except Exception as exc:
-            print(f"[features] {name} batch path unavailable; using serial fallback. Reason: {exc}", flush=True)
-            rows = []
-            n_cols = self.n_magpie if name == "Magpie" else self.extra_sizes.get(name, 1)
-            for comp in tqdm(comps, desc=f"{name} serial", leave=False):
-                try:
-                    vals = _nan_to_num(featurizer.featurize(comp))
-                    n_cols = len(vals)
-                except Exception:
-                    vals = np.zeros(n_cols, dtype=np.float32)
-                rows.append(vals)
-            arr = np.vstack(rows).astype(np.float32)
-            self.extra_sizes[name] = int(arr.shape[1])
-            print(f"[features] {name} serial done in {time.time() - t0:.1f}s dim={arr.shape[1]}", flush=True)
-            return arr
-
     def _extras(self, comp) -> np.ndarray:
         parts = []
         for name, featurizer in self.extra_featurizers:
@@ -311,23 +274,22 @@ class CompositionFeatureBuilder:
             print(f"[features] process composition done in {time.time() - t0:.1f}s shape={out.shape}", flush=True)
             return out
 
-        print(f"[features] matminer batch featurizers workers={self.workers}", flush=True)
-        parts = [self._batch_featurize("Magpie", self.magpie, comps)]
-        for name, featurizer in self.extra_featurizers:
-            parts.append(self._batch_featurize(name, featurizer, comps))
+        print(f"[features] old-style composition loop ({len(comps)} samples)", flush=True)
         rows = []
-        for idx, comp in enumerate(tqdm(comps, desc="light composition features", leave=False)):
+        t0 = time.time()
+        for idx, comp in enumerate(tqdm(comps, desc="composition features", leave=False)):
             structure = structures[idx] if structures is not None else None
             rows.append(np.concatenate([
+                self._magpie(comp),
+                self._extras(comp),
                 _homo_lumo_features(comp),
                 _composition_sensor_features(comp),
                 _structure_metadata(structure),
                 _perovskite_features(comp),
                 self.pooler.pool(comp),
             ]).astype(np.float32))
-        parts.append(np.vstack(rows).astype(np.float32))
-        out = np.concatenate(parts, axis=1).astype(np.float32)
-        print(f"[features] composition matrix ready shape={out.shape}", flush=True)
+        out = np.vstack(rows).astype(np.float32)
+        print(f"[features] composition matrix ready in {time.time() - t0:.1f}s shape={out.shape}", flush=True)
         return out
 
 
