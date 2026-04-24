@@ -140,8 +140,9 @@ class CompositionFeatureBuilder:
         from matminer.featurizers.composition import BandCenter, IonProperty, Stoichiometry, ValenceOrbital
         from matminer.featurizers.composition.element import ElementFraction, TMetalFraction
 
-        extras = [("ElementFraction", ElementFraction()), ("Stoichiometry", Stoichiometry())]
-        extras.extend([("ValenceOrbital", ValenceOrbital()), ("IonProperty", IonProperty())])
+        extras = [("ElementFraction", ElementFraction()), ("Stoichiometry", Stoichiometry()), ("ValenceOrbital", ValenceOrbital())]
+        if self.flavor == "electronic_hybrid":
+            extras.append(("IonProperty", IonProperty()))
         if "electronic" in self.flavor or self.flavor in {"formation_graph", "elastic_graph"}:
             extras.append(("BandCenter", BandCenter()))
         extras.append(("TMetalFraction", TMetalFraction()))
