@@ -55,6 +55,8 @@ For low-cost CPU pods, build all feature/graph caches first and upload them to
 a Hugging Face dataset repo:
 
 ```bash
+python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+python -m pip install -r requirements-builder.txt
 python -m matbenchtasks.build_datasets --root /workspace/matbench_triads_dataset_cache --tasks all --workers 32 --hf-repo YOUR_USER/YOUR_DATASET_REPO --upload
 ```
 
