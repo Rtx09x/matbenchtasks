@@ -258,12 +258,8 @@ def _structure_metadata(structure) -> np.ndarray:
         vals.append(structure.volume / max(len(structure), 1))
         vals.append(structure.density)
         vals.append(float(len(structure)))
-        try:
-            from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-
-            vals.append(float(SpacegroupAnalyzer(structure, symprec=0.1).get_space_group_number()))
-        except Exception:
-            vals.append(0.0)
+        # Space group analysis is too slow for notebook smoke/full sequential runs.
+        vals.append(0.0)
         try:
             total = 0.0
             for site in structure:
@@ -512,8 +508,10 @@ def load_or_build_features(
 
     print(f"[cache] building {task.key} features -> {cache_file}")
     t0 = time.time()
+    print(f"[cache:{task.key}] composition features start ({len(comps)} samples)", flush=True)
     builder = CompositionFeatureBuilder(root / "_feature_cache", task.feature_flavor)
     x_comp = builder.build(comps, structures)
+    print(f"[cache:{task.key}] composition features done in {time.time() - t0:.1f}s dim={x_comp.shape[1]}", flush=True)
     data: Dict = {
         "task": task.key,
         "mode": "graph" if task.is_graph else "hybrid",
@@ -530,11 +528,19 @@ def load_or_build_features(
     }
     if task.is_graph:
         assert structures is not None, f"{task.key} requires structures"
+        t_global = time.time()
+        print(f"[cache:{task.key}] global physics start", flush=True)
         data["global_physics"] = torch.tensor(_global_physics(structures, comps, task.feature_flavor), dtype=torch.float32)
+        print(f"[cache:{task.key}] global physics done in {time.time() - t_global:.1f}s dim={data['global_physics'].shape[1]}", flush=True)
+        t_graph = time.time()
+        print(f"[cache:{task.key}] graph features start workers={workers}", flush=True)
         data["graphs"] = build_graphs(structures, workers=workers)
+        print(f"[cache:{task.key}] graph features done in {time.time() - t_graph:.1f}s", flush=True)
         data["manifest"]["global_dim"] = int(data["global_physics"].shape[1])
     data["manifest"]["built_seconds"] = round(time.time() - t0, 2)
+    print(f"[cache:{task.key}] saving cache", flush=True)
     torch.save(data, cache_file)
+    print(f"[cache:{task.key}] saved in {time.time() - t0:.1f}s", flush=True)
     return data
 
 
