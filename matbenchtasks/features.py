@@ -82,7 +82,7 @@ def structure_fingerprint(structure) -> str:
 class Mat2VecPooler:
     def __init__(self, cache_dir: Path):
         self.cache_dir = cache_dir
-        self.embeddings: Dict[str, np.ndarray] = {}
+        self.kv = None
         self.available = False
         self._load()
 
@@ -94,22 +94,27 @@ class Mat2VecPooler:
             for name in MAT2VEC_FILES:
                 path = self.cache_dir / name
                 if not path.exists():
+                    print(f"[features] downloading Mat2Vec {name}", flush=True)
                     urllib.request.urlretrieve(MAT2VEC_URL + name, path)
-            model = Word2Vec.load(str(self.cache_dir / "pretrained_embeddings"))
-            self.embeddings = {w: model.wv[w].astype(np.float32) for w in model.wv.index_to_key}
+            t0 = time.time()
+            model = Word2Vec.load(str(self.cache_dir / "pretrained_embeddings"), mmap="r")
+            self.kv = model.wv
             self.available = True
+            print(f"[features] Mat2Vec ready in {time.time() - t0:.1f}s vocab={len(self.kv)}", flush=True)
         except Exception as exc:
             print(f"[features] Mat2Vec unavailable; using zero embeddings. Reason: {exc}")
-            self.embeddings = {}
+            self.kv = None
             self.available = False
 
     def pool(self, comp) -> np.ndarray:
         vec = np.zeros(200, dtype=np.float32)
         total = 0.0
+        if self.kv is None:
+            return vec
         try:
             for symbol, amount in comp.get_el_amt_dict().items():
-                if symbol in self.embeddings:
-                    vec += float(amount) * self.embeddings[symbol]
+                if symbol in self.kv.key_to_index:
+                    vec += float(amount) * self.kv[symbol]
                     total += float(amount)
         except Exception:
             return vec
