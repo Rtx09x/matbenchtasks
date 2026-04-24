@@ -124,9 +124,10 @@ class Mat2VecPooler:
 
 
 class CompositionFeatureBuilder:
-    def __init__(self, cache_dir: Path, flavor: str):
+    def __init__(self, cache_dir: Path, flavor: str, workers: int = 1):
         self.cache_dir = cache_dir
         self.flavor = flavor
+        self.workers = max(1, int(workers or 1))
         self.pooler = Mat2VecPooler(cache_dir / "mat2vec")
         self.extra_sizes: Dict[str, int] = {}
         self._init_featurizers()
@@ -159,6 +160,34 @@ class CompositionFeatureBuilder:
         except Exception:
             return np.zeros(self.n_magpie, dtype=np.float32)
 
+    def _batch_featurize(self, name: str, featurizer, comps: Sequence) -> np.ndarray:
+        try:
+            if hasattr(featurizer, "set_n_jobs"):
+                featurizer.set_n_jobs(self.workers)
+            rows = featurizer.featurize_many(comps, ignore_errors=True, pbar=False)
+            arr = np.asarray(rows, dtype=np.float32)
+            if arr.ndim == 1:
+                arr = arr.reshape(len(comps), -1)
+            arr = _nan_to_num(arr)
+            if arr.shape[0] != len(comps):
+                raise ValueError(f"{name} returned {arr.shape[0]} rows for {len(comps)} comps")
+            self.extra_sizes[name] = int(arr.shape[1])
+            return arr
+        except Exception as exc:
+            print(f"[features] {name} batch path unavailable; using serial fallback. Reason: {exc}", flush=True)
+            rows = []
+            n_cols = self.n_magpie if name == "Magpie" else self.extra_sizes.get(name, 1)
+            for comp in tqdm(comps, desc=f"{name} serial", leave=False):
+                try:
+                    vals = _nan_to_num(featurizer.featurize(comp))
+                    n_cols = len(vals)
+                except Exception:
+                    vals = np.zeros(n_cols, dtype=np.float32)
+                rows.append(vals)
+            arr = np.vstack(rows).astype(np.float32)
+            self.extra_sizes[name] = int(arr.shape[1])
+            return arr
+
     def _extras(self, comp) -> np.ndarray:
         parts = []
         for name, featurizer in self.extra_featurizers:
@@ -173,18 +202,22 @@ class CompositionFeatureBuilder:
         return np.concatenate(parts).astype(np.float32)
 
     def build(self, comps: Sequence, structures: Optional[Sequence] = None) -> np.ndarray:
+        print(f"[features] matminer batch featurizers workers={self.workers}", flush=True)
+        parts = [self._batch_featurize("Magpie", self.magpie, comps)]
+        for name, featurizer in self.extra_featurizers:
+            parts.append(self._batch_featurize(name, featurizer, comps))
         rows = []
-        for idx, comp in enumerate(tqdm(comps, desc="composition features", leave=False)):
+        for idx, comp in enumerate(tqdm(comps, desc="light composition features", leave=False)):
             structure = structures[idx] if structures is not None else None
-            row = [
-                self._magpie(comp),
-                self._extras(comp),
+            rows.append(np.concatenate([
+                _homo_lumo_features(comp),
+                _composition_sensor_features(comp),
                 _structure_metadata(structure),
                 _perovskite_features(comp),
                 self.pooler.pool(comp),
-            ]
-            rows.append(np.concatenate(row).astype(np.float32))
-        return np.vstack(rows).astype(np.float32)
+            ]).astype(np.float32))
+        parts.append(np.vstack(rows).astype(np.float32))
+        return np.concatenate(parts, axis=1).astype(np.float32)
 
 
 def _homo_lumo_features(comp) -> np.ndarray:
@@ -515,7 +548,7 @@ def load_or_build_features(
     print(f"[cache] building {task.key} features -> {cache_file}")
     t0 = time.time()
     print(f"[cache:{task.key}] composition features start ({len(comps)} samples)", flush=True)
-    builder = CompositionFeatureBuilder(root / "_feature_cache", task.feature_flavor)
+    builder = CompositionFeatureBuilder(root / "_feature_cache", task.feature_flavor, workers=workers)
     x_comp = builder.build(comps, structures)
     print(f"[cache:{task.key}] composition features done in {time.time() - t0:.1f}s dim={x_comp.shape[1]}", flush=True)
     data: Dict = {
