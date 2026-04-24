@@ -134,7 +134,7 @@ class GraphMPLayer(nn.Module):
             b_kj = bonds[triplets[1]]
             inp = torch.cat([b_ij, b_kj, angle_feat], dim=-1)
             msg = self.bond_msg(inp) * self.bond_gate(inp)
-            agg = torch.zeros_like(bonds)
+            agg = torch.zeros(bonds.shape, dtype=msg.dtype, device=bonds.device)
             agg.scatter_add_(0, triplets[0].unsqueeze(-1).expand_as(msg), msg)
             bonds = bonds + self.bond_up(torch.cat([bonds, agg], dim=-1))
         inp = torch.cat([atoms[edge_index[0]], atoms[edge_index[1]], bonds], dim=-1)
@@ -285,4 +285,3 @@ def build_model(kind: str, input_dim: int, global_dim: int, cfg: ModelConfig, ou
     if kind == "graph":
         return GraphTRIADS(comp_dim=input_dim, global_dim=global_dim, cfg=cfg, output_dim=output_dim)
     raise ValueError(f"Unknown model kind: {kind}")
-
