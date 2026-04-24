@@ -6,7 +6,7 @@ import math
 import os
 import time
 import urllib.request
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -341,7 +341,9 @@ def _build_graph_worker(payload):
 def build_graphs(structures: Sequence, workers: int = 1) -> List[Dict[str, torch.Tensor]]:
     elem_table = build_element_table()
     if workers and workers > 1:
-        with ProcessPoolExecutor(max_workers=workers) as pool:
+        # Thread workers avoid notebook/container ProcessPool hangs caused by
+        # pickling large pymatgen Structure objects and forking after CUDA libs load.
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             return list(tqdm(pool.map(_build_graph_worker, [(s, elem_table) for s in structures]), total=len(structures), desc="graph features"))
     return [build_graph(s, elem_table) for s in tqdm(structures, desc="graph features", leave=False)]
 
@@ -542,4 +544,3 @@ def write_feature_manifest(task_dir: Path, feature_data: Dict) -> None:
     manifest["cache_verified"] = True
     with open(task_dir / "feature_manifest.json", "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
-
