@@ -49,6 +49,25 @@ All task scripts accept the same options: `--root`, `--seed`, `--device`,
 `--amp`, `--workers`, `--max-samples`, `--fold-limit`, `--epochs`,
 `--force-rebuild-features`, and `--preflight-only`.
 
+## CPU Dataset Build
+
+For low-cost CPU pods, build all feature/graph caches first and upload them to
+a Hugging Face dataset repo:
+
+```bash
+python -m matbenchtasks.build_datasets --root /workspace/matbench_triads_dataset_cache --tasks all --workers 32 --hf-repo YOUR_USER/YOUR_DATASET_REPO --upload
+```
+
+On the A100 pod, download the prebuilt cache before training:
+
+```bash
+python -m matbenchtasks.download_datasets --root /workspace/matbench_triads_runs --hf-repo YOUR_USER/YOUR_DATASET_REPO
+python -m matbenchtasks.run_all_tasks --root /workspace/matbench_triads_runs --tasks all --seed 42 --device cuda --amp bf16 --memory-profile a100_80gb --workers 16
+```
+
+When `targets.npy` and `_feature_cache/*.pt` are present, the training scripts
+load them directly and skip Matbench JSON parsing plus feature rebuilding.
+
 ## Outputs
 
 Each task writes to `<root>/<task>/`:

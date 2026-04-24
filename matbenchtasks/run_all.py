@@ -12,7 +12,7 @@ import torch
 
 from .configs import DEFAULT_SEED, TASKS, resolve_tasks
 from .data import load_matbench_frame
-from .features import load_or_build_features, write_feature_manifest
+from .features import load_cached_features, load_or_build_features, write_feature_manifest
 from .models import build_model, count_parameters
 from .train import train_one_task
 
@@ -99,16 +99,27 @@ def main(argv=None) -> int:
         task_dir = root / task.key
         task_dir.mkdir(parents=True, exist_ok=True)
 
-        df, targets, structures, comps = load_matbench_frame(task, max_samples=args.max_samples)
-        print(f"[{task.key}] samples={len(targets):,} target={task.target_col} type={task.task_type}")
-        feature_data = load_or_build_features(
-            task=task,
-            structures=structures,
-            comps=comps,
-            root=root,
-            workers=args.workers,
-            force_rebuild=args.force_rebuild_features,
-        )
+        target_file = task_dir / "targets.npy"
+        feature_data = None
+        targets = None
+        if args.max_samples is None and not args.force_rebuild_features and target_file.exists():
+            feature_data = load_cached_features(task, root)
+            if feature_data is not None:
+                import numpy as np
+
+                targets = np.load(target_file).astype("float32")
+                print(f"[{task.key}] prebuilt cache samples={len(targets):,} target={task.target_col} type={task.task_type}", flush=True)
+        if feature_data is None or targets is None:
+            df, targets, structures, comps = load_matbench_frame(task, max_samples=args.max_samples)
+            print(f"[{task.key}] samples={len(targets):,} target={task.target_col} type={task.task_type}")
+            feature_data = load_or_build_features(
+                task=task,
+                structures=structures,
+                comps=comps,
+                root=root,
+                workers=args.workers,
+                force_rebuild=args.force_rebuild_features,
+            )
         write_feature_manifest(task_dir, feature_data)
         summary = train_one_task(
             task=task,
@@ -144,4 +155,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

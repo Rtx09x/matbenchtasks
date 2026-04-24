@@ -6,7 +6,7 @@ import math
 import os
 import time
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -122,6 +122,91 @@ class Mat2VecPooler:
             vec /= total
         return vec
 
+    def element_vectors(self) -> Dict[str, np.ndarray]:
+        vectors: Dict[str, np.ndarray] = {}
+        if self.kv is None:
+            return vectors
+        try:
+            from pymatgen.core.periodic_table import Element
+
+            for z in range(1, 103):
+                symbol = Element.from_Z(z).symbol
+                if symbol in self.kv.key_to_index:
+                    vectors[symbol] = np.asarray(self.kv[symbol], dtype=np.float32)
+        except Exception:
+            return vectors
+        return vectors
+
+
+_COMP_WORKER = {}
+
+
+def _init_composition_worker(flavor: str, element_vectors: Dict[str, np.ndarray]) -> None:
+    from matminer.featurizers.composition import BandCenter, ElementProperty, IonProperty, Stoichiometry, ValenceOrbital
+    from matminer.featurizers.composition.element import ElementFraction, TMetalFraction
+
+    magpie = ElementProperty.from_preset("magpie")
+    extras = [("ElementFraction", ElementFraction()), ("Stoichiometry", Stoichiometry()), ("ValenceOrbital", ValenceOrbital())]
+    if flavor == "electronic_hybrid":
+        extras.append(("IonProperty", IonProperty()))
+    if "electronic" in flavor or flavor in {"formation_graph", "elastic_graph"}:
+        extras.append(("BandCenter", BandCenter()))
+    extras.append(("TMetalFraction", TMetalFraction()))
+    sizes = {}
+    for name, featurizer in extras:
+        try:
+            sizes[name] = len(featurizer.feature_labels())
+        except Exception:
+            sizes[name] = 1
+    _COMP_WORKER.clear()
+    _COMP_WORKER.update({
+        "flavor": flavor,
+        "magpie": magpie,
+        "n_magpie": len(magpie.feature_labels()),
+        "extras": extras,
+        "sizes": sizes,
+        "element_vectors": element_vectors,
+    })
+
+
+def _pool_mat2vec_from_vectors(comp, element_vectors: Dict[str, np.ndarray]) -> np.ndarray:
+    vec = np.zeros(200, dtype=np.float32)
+    total = 0.0
+    try:
+        for symbol, amount in comp.get_el_amt_dict().items():
+            emb = element_vectors.get(symbol)
+            if emb is not None:
+                vec += float(amount) * emb
+                total += float(amount)
+    except Exception:
+        return vec
+    if total > 0:
+        vec /= total
+    return vec
+
+
+def _composition_worker(payload) -> np.ndarray:
+    comp, structure = payload
+    parts = []
+    try:
+        parts.append(_nan_to_num(_COMP_WORKER["magpie"].featurize(comp)))
+    except Exception:
+        parts.append(np.zeros(_COMP_WORKER["n_magpie"], dtype=np.float32))
+    for name, featurizer in _COMP_WORKER["extras"]:
+        try:
+            values = _nan_to_num(featurizer.featurize(comp))
+        except Exception:
+            values = np.zeros(_COMP_WORKER["sizes"].get(name, 1), dtype=np.float32)
+        parts.append(values)
+    parts.extend([
+        _homo_lumo_features(comp),
+        _composition_sensor_features(comp),
+        _structure_metadata(structure),
+        _perovskite_features(comp),
+        _pool_mat2vec_from_vectors(comp, _COMP_WORKER["element_vectors"]),
+    ])
+    return np.concatenate(parts).astype(np.float32)
+
 
 class CompositionFeatureBuilder:
     def __init__(self, cache_dir: Path, flavor: str, workers: int = 1):
@@ -211,6 +296,21 @@ class CompositionFeatureBuilder:
         return np.concatenate(parts).astype(np.float32)
 
     def build(self, comps: Sequence, structures: Optional[Sequence] = None) -> np.ndarray:
+        if self.workers > 1 and os.environ.get("MATBENCHTASKS_PROCESS_FEATURES") == "1":
+            print(f"[features] process composition workers={self.workers}", flush=True)
+            t0 = time.time()
+            element_vectors = self.pooler.element_vectors()
+            payloads = [(comp, structures[idx] if structures is not None else None) for idx, comp in enumerate(comps)]
+            with ProcessPoolExecutor(
+                max_workers=self.workers,
+                initializer=_init_composition_worker,
+                initargs=(self.flavor, element_vectors),
+            ) as pool:
+                rows = list(tqdm(pool.map(_composition_worker, payloads), total=len(payloads), desc="composition features"))
+            out = np.vstack(rows).astype(np.float32)
+            print(f"[features] process composition done in {time.time() - t0:.1f}s shape={out.shape}", flush=True)
+            return out
+
         print(f"[features] matminer batch featurizers workers={self.workers}", flush=True)
         parts = [self._batch_featurize("Magpie", self.magpie, comps)]
         for name, featurizer in self.extra_featurizers:
@@ -384,9 +484,12 @@ def _build_graph_worker(payload):
     return build_graph(structure, elem_table)
 
 
-def build_graphs(structures: Sequence, workers: int = 1) -> List[Dict[str, torch.Tensor]]:
+def build_graphs(structures: Sequence, workers: int = 1, backend: str = "thread") -> List[Dict[str, torch.Tensor]]:
     elem_table = build_element_table()
     if workers and workers > 1:
+        if backend == "process":
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                return list(tqdm(pool.map(_build_graph_worker, [(s, elem_table) for s in structures]), total=len(structures), desc="graph features"))
         # Thread workers avoid notebook/container ProcessPool hangs caused by
         # pickling large pymatgen Structure objects and forking after CUDA libs load.
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -537,6 +640,14 @@ def _cache_path(root: Path, task: TaskConfig) -> Path:
     return root / "_feature_cache" / f"{group}_{task.feature_flavor}.pt"
 
 
+def load_cached_features(task: TaskConfig, root: Path) -> Optional[Dict]:
+    cache_file = _cache_path(root, task)
+    if not cache_file.exists():
+        return None
+    print(f"[cache] direct load {cache_file}", flush=True)
+    return torch.load(cache_file, weights_only=False, map_location="cpu")
+
+
 def load_or_build_features(
     task: TaskConfig,
     structures: Optional[Sequence],
@@ -544,6 +655,7 @@ def load_or_build_features(
     root: Path,
     workers: int,
     force_rebuild: bool = False,
+    worker_backend: str = "thread",
 ) -> Dict:
     cache_file = _cache_path(root, task)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -584,7 +696,7 @@ def load_or_build_features(
         print(f"[cache:{task.key}] global physics done in {time.time() - t_global:.1f}s dim={data['global_physics'].shape[1]}", flush=True)
         t_graph = time.time()
         print(f"[cache:{task.key}] graph features start workers={workers}", flush=True)
-        data["graphs"] = build_graphs(structures, workers=workers)
+        data["graphs"] = build_graphs(structures, workers=workers, backend=worker_backend)
         print(f"[cache:{task.key}] graph features done in {time.time() - t_graph:.1f}s", flush=True)
         data["manifest"]["global_dim"] = int(data["global_physics"].shape[1])
     data["manifest"]["built_seconds"] = round(time.time() - t0, 2)
