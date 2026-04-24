@@ -164,7 +164,12 @@ class CompositionFeatureBuilder:
         try:
             if hasattr(featurizer, "set_n_jobs"):
                 featurizer.set_n_jobs(self.workers)
-            rows = featurizer.featurize_many(comps, ignore_errors=True, pbar=False)
+            if hasattr(featurizer, "n_jobs"):
+                featurizer.n_jobs = self.workers
+            try:
+                rows = featurizer.featurize_many(comps, ignore_errors=True, pbar=True, n_jobs=self.workers)
+            except TypeError:
+                rows = featurizer.featurize_many(comps, ignore_errors=True, pbar=True)
             arr = np.asarray(rows, dtype=np.float32)
             if arr.ndim == 1:
                 arr = arr.reshape(len(comps), -1)
