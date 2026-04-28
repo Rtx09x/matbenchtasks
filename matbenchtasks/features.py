@@ -6,7 +6,8 @@ import math
 import os
 import time
 import urllib.request
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import warnings
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -39,6 +40,12 @@ def _safe_float(value, default: float = 0.0) -> float:
         return x
     except Exception:
         return default
+
+
+def _suppress_noisy_material_warnings() -> None:
+    warnings.filterwarnings("ignore", message=r".*PymatgenData\(impute_nan=False\).*", category=UserWarning)
+    warnings.filterwarnings("ignore", message=r".*No data available for .*", category=UserWarning)
+    warnings.filterwarnings("ignore", message=r".*No Pauling electronegativity for .*", category=UserWarning)
 
 
 def _nan_to_num(arr: Sequence[float]) -> np.ndarray:
@@ -414,6 +421,7 @@ def _perovskite_features(comp) -> np.ndarray:
 def build_element_table() -> np.ndarray:
     from pymatgen.core.periodic_table import Element
 
+    _suppress_noisy_material_warnings()
     table = np.zeros((103, 12), dtype=np.float32)
     for z in range(1, 103):
         try:
@@ -442,20 +450,32 @@ def build_element_table() -> np.ndarray:
 
 
 def _build_graph_worker(payload):
+    _suppress_noisy_material_warnings()
     structure, elem_table = payload
     return build_graph(structure, elem_table)
+
+
+def _parallel_build_graphs(executor_cls, structures: Sequence, elem_table: np.ndarray, workers: int) -> List[Dict[str, torch.Tensor]]:
+    graphs: List[Optional[Dict[str, torch.Tensor]]] = [None] * len(structures)
+    with executor_cls(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_build_graph_worker, (structure, elem_table)): idx
+            for idx, structure in enumerate(structures)
+        }
+        for future in tqdm(as_completed(futures), total=len(futures), desc="graph features"):
+            idx = futures[future]
+            graphs[idx] = future.result()
+    return [g for g in graphs if g is not None]
 
 
 def build_graphs(structures: Sequence, workers: int = 1, backend: str = "thread") -> List[Dict[str, torch.Tensor]]:
     elem_table = build_element_table()
     if workers and workers > 1:
         if backend == "process":
-            with ProcessPoolExecutor(max_workers=workers) as pool:
-                return list(tqdm(pool.map(_build_graph_worker, [(s, elem_table) for s in structures]), total=len(structures), desc="graph features"))
+            return _parallel_build_graphs(ProcessPoolExecutor, structures, elem_table, workers)
         # Thread workers avoid notebook/container ProcessPool hangs caused by
         # pickling large pymatgen Structure objects and forking after CUDA libs load.
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(tqdm(pool.map(_build_graph_worker, [(s, elem_table) for s in structures]), total=len(structures), desc="graph features"))
+        return _parallel_build_graphs(ThreadPoolExecutor, structures, elem_table, workers)
     return [build_graph(s, elem_table) for s in tqdm(structures, desc="graph features", leave=False)]
 
 
