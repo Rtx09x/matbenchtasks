@@ -20,6 +20,7 @@ def parse_args(argv=None):
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--force-rebuild-features", action="store_true")
+    parser.add_argument("--graph-backend", type=str, default="thread", choices=("thread", "process"))
     parser.add_argument("--hf-repo", type=str, default=None, help="Optional Hugging Face dataset repo, e.g. Rtx09/matbench-triads-cache")
     parser.add_argument("--hf-private", action="store_true")
     parser.add_argument("--upload", action="store_true")
@@ -48,8 +49,9 @@ def main(argv=None) -> int:
     tasks = list(resolve_tasks(args.tasks))
     workers = max(1, int(args.workers))
 
-    # Explicit process fan-out is for CPU build pods only. The A100 notebook
-    # training path keeps thread workers to avoid fork/CUDA interactions.
+    # Composition featurization benefits from process fan-out. Graph building
+    # defaults to threads because sending large pymatgen Structure objects into
+    # notebook child processes can hang before the first progress update.
     os.environ["MATBENCHTASKS_PROCESS_FEATURES"] = "1"
 
     print("=" * 80, flush=True)
@@ -58,6 +60,7 @@ def main(argv=None) -> int:
     print(f"root:    {root}", flush=True)
     print(f"tasks:   {[t.key for t in tasks]}", flush=True)
     print(f"workers: {workers}", flush=True)
+    print(f"graph backend: {args.graph_backend}", flush=True)
     print("=" * 80, flush=True)
 
     summaries = []
@@ -79,7 +82,7 @@ def main(argv=None) -> int:
             root=root,
             workers=workers,
             force_rebuild=args.force_rebuild_features,
-            worker_backend="process",
+            worker_backend=args.graph_backend,
         )
         write_feature_manifest(task_dir, feature_data)
         np.save(task_dir / "targets.npy", targets.astype(np.float32))
