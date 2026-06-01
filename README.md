@@ -67,11 +67,18 @@ tensors for graph tasks:
 WORKERS=128 REPO=Rtx09x/triadsdataset bash scripts/oracle_build_all.sh
 ```
 
+`scripts/oracle_build_all.sh` defaults to `UPLOAD_MODE=each`, so finished
+task caches are checkpoint-uploaded to Hugging Face after every task. This is
+the safest mode for short Lightning/spot sessions.
+
 Optional cache profiles:
 
 ```bash
 # Train-ready full cache, including graph tensors. This is the default.
 python -m matbenchtasks.build_datasets --root /workspace/matbench_triads_dataset_cache --tasks all --workers 128 --cache-profile full --hf-repo Rtx09x/triadsdataset --upload
+
+# Preemptible-session mode: upload after every completed task.
+python -m matbenchtasks.build_datasets --root /workspace/matbench_triads_dataset_cache --tasks all --workers 128 --cache-profile full --hf-repo Rtx09x/triadsdataset --upload-each
 
 # Smaller exploratory cache: composition/global features only for graph tasks.
 # This is not enough for graph training, but useful if you only want targets,

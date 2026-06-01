@@ -41,6 +41,11 @@ def parse_args(argv=None):
     parser.add_argument("--hf-repo", type=str, default=None, help="Optional Hugging Face dataset repo, e.g. Rtx09/matbench-triads-cache")
     parser.add_argument("--hf-private", action="store_true")
     parser.add_argument("--upload", action="store_true")
+    parser.add_argument(
+        "--upload-each",
+        action="store_true",
+        help="Upload the cache root to Hugging Face after each completed task. Best for preemptible/short sessions.",
+    )
     parser.add_argument("--repo-type", type=str, default="dataset")
     return parser.parse_args(argv)
 
@@ -149,6 +154,13 @@ def main(argv=None) -> int:
             }, indent=2),
             encoding="utf-8",
         )
+
+        if args.upload_each:
+            if not args.hf_repo:
+                raise ValueError("--upload-each requires --hf-repo")
+            print(f"[hf] checkpoint upload after {task.key}: {root} -> {args.hf_repo}", flush=True)
+            upload_to_hf(root, args.hf_repo, private=args.hf_private, repo_type=args.repo_type)
+            print(f"[hf] checkpoint upload complete after {task.key}", flush=True)
 
     if args.upload:
         if not args.hf_repo:

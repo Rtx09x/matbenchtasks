@@ -8,6 +8,7 @@ TASKS="${TASKS:-all}"
 CACHE_PROFILE="${CACHE_PROFILE:-full}"
 GRAPH_BACKEND="${GRAPH_BACKEND:-thread}"
 PYTHON_BIN="${PYTHON_BIN:-python3.11}"
+UPLOAD_MODE="${UPLOAD_MODE:-each}"
 
 sudo apt-get update
 sudo apt-get install -y git "${PYTHON_BIN}" "${PYTHON_BIN}-venv" python3-pip tmux htop
@@ -28,6 +29,13 @@ python -m pip install -r requirements-builder.txt
 python -m pip install huggingface_hub
 
 mkdir -p "${ROOT}"
+UPLOAD_FLAGS=(--upload)
+if [ "${UPLOAD_MODE}" = "each" ]; then
+  UPLOAD_FLAGS=(--upload-each)
+elif [ "${UPLOAD_MODE}" = "both" ]; then
+  UPLOAD_FLAGS=(--upload-each --upload)
+fi
+
 python -m matbenchtasks.build_datasets \
   --root "${ROOT}" \
   --tasks "${TASKS}" \
@@ -35,5 +43,4 @@ python -m matbenchtasks.build_datasets \
   --graph-backend "${GRAPH_BACKEND}" \
   --cache-profile "${CACHE_PROFILE}" \
   --hf-repo "${REPO}" \
-  --upload 2>&1 | tee /workspace/build_datasets.log
-
+  "${UPLOAD_FLAGS[@]}" 2>&1 | tee /workspace/build_datasets.log
