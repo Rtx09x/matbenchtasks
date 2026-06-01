@@ -60,6 +60,29 @@ python -m pip install -r requirements-builder.txt
 python -m matbenchtasks.build_datasets --root /workspace/matbench_triads_dataset_cache --tasks all --workers 32 --hf-repo YOUR_USER/YOUR_DATASET_REPO --upload
 ```
 
+For a large Oracle CPU VM, the default build is train-ready and includes graph
+tensors for graph tasks:
+
+```bash
+WORKERS=128 REPO=Rtx09x/triadsdataset bash scripts/oracle_build_all.sh
+```
+
+Optional cache profiles:
+
+```bash
+# Train-ready full cache, including graph tensors. This is the default.
+python -m matbenchtasks.build_datasets --root /workspace/matbench_triads_dataset_cache --tasks all --workers 128 --cache-profile full --hf-repo Rtx09x/triadsdataset --upload
+
+# Smaller exploratory cache: composition/global features only for graph tasks.
+# This is not enough for graph training, but useful if you only want targets,
+# dense features, manifests, and structure-level global features.
+python -m matbenchtasks.build_datasets --root /workspace/matbench_triads_dataset_cache_nograph --tasks all --workers 128 --cache-profile nograph --hf-repo Rtx09x/triadsdataset-nograph --upload
+
+# Only graph tasks, or only dense/hybrid tasks.
+python -m matbenchtasks.build_datasets --root /workspace/matbench_triads_dataset_cache --tasks all --workers 128 --graph-tasks-only
+python -m matbenchtasks.build_datasets --root /workspace/matbench_triads_dataset_cache --tasks all --workers 128 --dense-tasks-only
+```
+
 On the A100 pod, download the prebuilt cache before training:
 
 ```bash

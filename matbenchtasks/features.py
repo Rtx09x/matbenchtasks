@@ -617,9 +617,10 @@ def _global_physics(structures: Sequence, comps: Sequence, flavor: str) -> np.nd
     return np.vstack(rows).astype(np.float32)
 
 
-def _cache_path(root: Path, task: TaskConfig) -> Path:
+def _cache_path(root: Path, task: TaskConfig, cache_profile: str = "full") -> Path:
     group = task.cache_group if task.is_graph and task.cache_group else task.key
-    return root / "_feature_cache" / f"{group}_{task.feature_flavor}.pt"
+    suffix = "" if cache_profile == "full" else f"_{cache_profile}"
+    return root / "_feature_cache" / f"{group}_{task.feature_flavor}{suffix}.pt"
 
 
 def load_cached_features(task: TaskConfig, root: Path) -> Optional[Dict]:
@@ -638,8 +639,13 @@ def load_or_build_features(
     workers: int,
     force_rebuild: bool = False,
     worker_backend: str = "thread",
+    include_graphs: bool = True,
+    cache_profile: str = "full",
 ) -> Dict:
-    cache_file = _cache_path(root, task)
+    if not include_graphs and task.is_graph and cache_profile == "full":
+        cache_profile = "nograph"
+
+    cache_file = _cache_path(root, task, cache_profile=cache_profile)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     fingerprints = [structure_fingerprint(s) for s in structures] if structures is not None else [str(c) for c in comps]
 
@@ -658,13 +664,16 @@ def load_or_build_features(
     print(f"[cache:{task.key}] composition features done in {time.time() - t0:.1f}s dim={x_comp.shape[1]}", flush=True)
     data: Dict = {
         "task": task.key,
-        "mode": "graph" if task.is_graph else "hybrid",
+        "mode": "graph" if task.is_graph and include_graphs else ("graph_nograph" if task.is_graph else "hybrid"),
         "fingerprints": fingerprints,
         "comp_features": torch.tensor(x_comp, dtype=torch.float32),
         "manifest": {
             "task": task.key,
             "dataset": task.dataset_name,
             "feature_flavor": task.feature_flavor,
+            "cache_profile": cache_profile,
+            "include_graphs": bool(include_graphs and task.is_graph),
+            "cache_file": str(cache_file),
             "n_samples": len(comps),
             "comp_dim": int(x_comp.shape[1]),
             "built_seconds": None,
@@ -676,11 +685,14 @@ def load_or_build_features(
         print(f"[cache:{task.key}] global physics start", flush=True)
         data["global_physics"] = torch.tensor(_global_physics(structures, comps, task.feature_flavor), dtype=torch.float32)
         print(f"[cache:{task.key}] global physics done in {time.time() - t_global:.1f}s dim={data['global_physics'].shape[1]}", flush=True)
-        t_graph = time.time()
-        print(f"[cache:{task.key}] graph features start workers={workers}", flush=True)
-        data["graphs"] = build_graphs(structures, workers=workers, backend=worker_backend)
-        print(f"[cache:{task.key}] graph features done in {time.time() - t_graph:.1f}s", flush=True)
         data["manifest"]["global_dim"] = int(data["global_physics"].shape[1])
+        if include_graphs:
+            t_graph = time.time()
+            print(f"[cache:{task.key}] graph features start workers={workers}", flush=True)
+            data["graphs"] = build_graphs(structures, workers=workers, backend=worker_backend)
+            print(f"[cache:{task.key}] graph features done in {time.time() - t_graph:.1f}s", flush=True)
+        else:
+            print(f"[cache:{task.key}] graph tensor build skipped by cache profile", flush=True)
     data["manifest"]["built_seconds"] = round(time.time() - t0, 2)
     print(f"[cache:{task.key}] saving cache", flush=True)
     torch.save(data, cache_file)

@@ -21,6 +21,23 @@ def parse_args(argv=None):
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--force-rebuild-features", action="store_true")
     parser.add_argument("--graph-backend", type=str, default="thread", choices=("thread", "process"))
+    parser.add_argument(
+        "--cache-profile",
+        type=str,
+        default="full",
+        choices=("full", "nograph"),
+        help="full builds train-ready graph caches; nograph stores composition/global features without graph tensors.",
+    )
+    parser.add_argument(
+        "--graph-tasks-only",
+        action="store_true",
+        help="Only build tasks whose model kind is graph.",
+    )
+    parser.add_argument(
+        "--dense-tasks-only",
+        action="store_true",
+        help="Only build non-graph tasks such as dielectric.",
+    )
     parser.add_argument("--hf-repo", type=str, default=None, help="Optional Hugging Face dataset repo, e.g. Rtx09/matbench-triads-cache")
     parser.add_argument("--hf-private", action="store_true")
     parser.add_argument("--upload", action="store_true")
@@ -47,7 +64,16 @@ def main(argv=None) -> int:
     root = Path(args.root)
     root.mkdir(parents=True, exist_ok=True)
     tasks = list(resolve_tasks(args.tasks))
+    if args.graph_tasks_only and args.dense_tasks_only:
+        raise ValueError("--graph-tasks-only and --dense-tasks-only are mutually exclusive")
+    if args.graph_tasks_only:
+        tasks = [task for task in tasks if task.is_graph]
+    if args.dense_tasks_only:
+        tasks = [task for task in tasks if not task.is_graph]
+    if not tasks:
+        raise ValueError("No tasks selected after task filters")
     workers = max(1, int(args.workers))
+    include_graphs = args.cache_profile == "full"
 
     # Composition featurization benefits from process fan-out. Graph building
     # defaults to threads because sending large pymatgen Structure objects into
@@ -61,6 +87,7 @@ def main(argv=None) -> int:
     print(f"tasks:   {[t.key for t in tasks]}", flush=True)
     print(f"workers: {workers}", flush=True)
     print(f"graph backend: {args.graph_backend}", flush=True)
+    print(f"cache profile: {args.cache_profile}", flush=True)
     print("=" * 80, flush=True)
 
     summaries = []
@@ -83,6 +110,8 @@ def main(argv=None) -> int:
             workers=workers,
             force_rebuild=args.force_rebuild_features,
             worker_backend=args.graph_backend,
+            include_graphs=include_graphs,
+            cache_profile=args.cache_profile,
         )
         write_feature_manifest(task_dir, feature_data)
         np.save(task_dir / "targets.npy", targets.astype(np.float32))
@@ -95,6 +124,8 @@ def main(argv=None) -> int:
                 "task_type": task.task_type,
                 "n_samples": int(len(targets)),
                 "feature_cache_ready": True,
+                "cache_profile": args.cache_profile,
+                "include_graphs": bool(include_graphs and task.is_graph),
             }, indent=2),
             encoding="utf-8",
         )
@@ -103,7 +134,8 @@ def main(argv=None) -> int:
             "dataset": task.dataset_name,
             "samples": len(targets),
             "mode": feature_data.get("mode"),
-            "cache_file": str((root / "_feature_cache").resolve()),
+            "cache_profile": args.cache_profile,
+            "cache_file": feature_data.get("manifest", {}).get("cache_file", str((root / "_feature_cache").resolve())),
             "feature_manifest": feature_data.get("manifest", {}),
             "elapsed_minutes": round((time.time() - t_task) / 60.0, 2),
         }
